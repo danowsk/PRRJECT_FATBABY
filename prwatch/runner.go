@@ -81,7 +81,7 @@ func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
 			ID:           "pr_discovered:" + pr.ID,
 			Type:         "pr_discovered",
 			OccurredAt:   cfg.Now(),
-			AggregateKey: pr.ID,
+			PartitionKey: pr.ID,
 			Source:       "prnewswire",
 			Data:         mustJSON(eventData(ctx, cfg, pr, cfg.Now())),
 		}
@@ -129,8 +129,8 @@ func LoadSeenIDs(ctx context.Context, store eventstore.EventStore) (map[string]s
 			if rec.Event.Type != "pr_discovered" {
 				continue
 			}
-			if rec.Event.AggregateKey != "" {
-				seen[rec.Event.AggregateKey] = struct{}{}
+			if rec.Event.PartitionKey != "" {
+				seen[rec.Event.PartitionKey] = struct{}{}
 				continue
 			}
 			var e PressReleaseDiscovered

@@ -31,7 +31,7 @@ func appendProxyEventAsync(store eventstore.EventStore, logger *log.Logger, ev P
 		if err != nil {
 			return
 		}
-		_, err = store.Append(context.Background(), eventstore.Event{ID: time.Now().UTC().Format(time.RFC3339Nano), Type: "proxy_request", OccurredAt: time.Now().UTC(), AggregateKey: ev.TenantID, Source: "broker", Data: b})
+		_, err = store.Append(context.Background(), eventstore.Event{ID: time.Now().UTC().Format(time.RFC3339Nano), Type: "proxy_request", OccurredAt: time.Now().UTC(), PartitionKey: ev.TenantID, Source: "broker", Data: b})
 		if err != nil && logger != nil {
 			logger.Printf("event append failed: %v", err)
 		}

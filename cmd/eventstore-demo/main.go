@@ -34,7 +34,7 @@ func main() {
 			ID:           "demo-evt-1",
 			Type:         "filing_discovered",
 			OccurredAt:   time.Now().UTC(),
-			AggregateKey: "0000320193-25-000073",
+			PartitionKey: "0000320193-25-000073",
 			Source:       "sec-edgar",
 			Data:         mustJSON(map[string]any{"form": "10-K", "cik": "320193"}),
 		},
@@ -42,7 +42,7 @@ func main() {
 			ID:           "demo-evt-2",
 			Type:         "filing_fetched",
 			OccurredAt:   time.Now().UTC(),
-			AggregateKey: "0000320193-25-000073",
+			PartitionKey: "0000320193-25-000073",
 			Source:       "sec-fetcher",
 			Data: mustJSON(map[string]any{
 				"url":   "https://www.sec.gov/Archives/edgar/data/320193/000032019325000073/aapl-20240928x10k.htm",

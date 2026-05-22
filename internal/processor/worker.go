@@ -74,7 +74,7 @@ func processBatch(ctx context.Context, cfg WorkerConfig, recs []eventstore.Recor
 	}
 	matched := 0
 	for _, r := range recs {
-		cfg.Logger.Printf("processor saw event sequence=%d type=%s aggregate=%s source=%s", r.Sequence, r.Event.Type, r.Event.AggregateKey, r.Event.Source)
+		cfg.Logger.Printf("processor saw event sequence=%d type=%s aggregate=%s source=%s", r.Sequence, r.Event.Type, r.Event.PartitionKey, r.Event.Source)
 		if r.Event.Type != "filing_discovered" {
 			continue
 		}
@@ -126,7 +126,7 @@ func handleOne(ctx context.Context, cfg WorkerConfig, filing secwatch.FilingDisc
 		signal.Timestamp = time.Now().UTC()
 	}
 	payload, _ := json.Marshal(signal)
-	_, err = cfg.Store.Append(ctx, eventstore.Event{ID: "signal_generated:" + identity, Type: "signal_generated", AggregateKey: identity, Source: "processor", Data: payload})
+	_, err = cfg.Store.Append(ctx, eventstore.Event{ID: "signal_generated:" + identity, Type: "signal_generated", PartitionKey: identity, Source: "processor", Data: payload})
 	if err != nil {
 		cfg.Logger.Printf("processor append failed identity=%s err=%v", identity, err)
 		return err
@@ -143,7 +143,7 @@ func signalExists(ctx context.Context, store eventstore.EventStore, identity str
 			return false
 		}
 		for _, r := range recs {
-			if r.Event.Type == "signal_generated" && r.Event.AggregateKey == identity {
+			if r.Event.Type == "signal_generated" && r.Event.PartitionKey == identity {
 				return true
 			}
 		}
@@ -153,7 +153,7 @@ func signalExists(ctx context.Context, store eventstore.EventStore, identity str
 
 func appendFailure(ctx context.Context, store eventstore.EventStore, filing secwatch.FilingDiscoveredEvent, cause error) {
 	payload, _ := json.Marshal(map[string]string{"ticker": filing.Ticker, "cik": filing.CIK, "accession_number": filing.AccessionNumber, "error": cause.Error()})
-	_, _ = store.Append(ctx, eventstore.Event{ID: "signal_failed:" + secwatch.FilingIdentity(filing.CIK, filing.AccessionNumber), Type: "signal_failed", AggregateKey: secwatch.FilingIdentity(filing.CIK, filing.AccessionNumber), Source: "processor", Data: payload})
+	_, _ = store.Append(ctx, eventstore.Event{ID: "signal_failed:" + secwatch.FilingIdentity(filing.CIK, filing.AccessionNumber), Type: "signal_failed", PartitionKey: secwatch.FilingIdentity(filing.CIK, filing.AccessionNumber), Source: "processor", Data: payload})
 }
 
 var _ = intelligence.Signal{}

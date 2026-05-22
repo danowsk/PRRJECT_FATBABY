@@ -167,7 +167,7 @@ func crawlBatch(
 			cfg.Logger.Printf("body_crawler skip sequence=%d reason=unmarshal_failed err=%v", r.Sequence, err)
 			continue
 		}
-		prID := r.Event.AggregateKey
+		prID := r.Event.PartitionKey
 		if prID == "" {
 			prID = ev.URL
 		}
@@ -206,7 +206,7 @@ func crawlOne(ctx context.Context, cfg CrawlerConfig, prID string, ev PressRelea
 			ID:           "pr_body_failed:" + prID,
 			Type:         "pr_body_failed",
 			OccurredAt:   now,
-			AggregateKey: prID,
+			PartitionKey: prID,
 			Source:       "prwatch_crawler",
 			Data:         payload,
 		})
@@ -226,7 +226,7 @@ func crawlOne(ctx context.Context, cfg CrawlerConfig, prID string, ev PressRelea
 		ID:           "pr_body_fetched:" + prID,
 		Type:         "pr_body_fetched",
 		OccurredAt:   now,
-		AggregateKey: prID,
+		PartitionKey: prID,
 		Source:       "prwatch_crawler",
 		Data:         payload,
 	})
@@ -234,7 +234,7 @@ func crawlOne(ctx context.Context, cfg CrawlerConfig, prID string, ev PressRelea
 }
 
 // loadBodySeenIDs reads the body store once at startup and returns the set
-// of AggregateKeys for events that have already been processed (both
+// of PartitionKeys for events that have already been processed (both
 // pr_body_fetched and pr_body_failed count as "seen" to avoid re-fetching
 // known-bad URLs on every restart).
 func loadBodySeenIDs(ctx context.Context, store eventstore.EventStore) (map[string]struct{}, error) {
@@ -251,8 +251,8 @@ func loadBodySeenIDs(ctx context.Context, store eventstore.EventStore) (map[stri
 		for _, rec := range recs {
 			switch rec.Event.Type {
 			case "pr_body_fetched", "pr_body_failed":
-				if rec.Event.AggregateKey != "" {
-					seen[rec.Event.AggregateKey] = struct{}{}
+				if rec.Event.PartitionKey != "" {
+					seen[rec.Event.PartitionKey] = struct{}{}
 				}
 			}
 		}

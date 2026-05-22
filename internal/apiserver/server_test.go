@@ -17,7 +17,7 @@ func add(t *testing.T, idx *signalindex.Index, seq uint64, ticker, typ string, i
 	t.Helper()
 	s := intelligence.Signal{ID: fmt.Sprintf("id-%d", seq), Ticker: ticker, Timestamp: ts, SignalType: typ, Importance: imp}
 	b, _ := json.Marshal(s)
-	if err := idx.Ingest(eventstore.Record{Sequence: seq, AppendedAt: ts, Event: eventstore.Event{Type: "signal_generated", AggregateKey: "1:abc", Data: b}}); err != nil {
+	if err := idx.Ingest(eventstore.Record{Sequence: seq, AppendedAt: ts, Event: eventstore.Event{Type: "signal_generated", PartitionKey: "1:abc", Data: b}}); err != nil {
 		t.Fatal(err)
 	}
 }

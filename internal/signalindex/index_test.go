@@ -14,7 +14,7 @@ import (
 func sigRec(seq uint64, ticker string, ts time.Time) eventstore.Record {
 	s := intelligence.Signal{ID: fmt.Sprintf("s-%d", seq), Ticker: ticker, Timestamp: ts, SignalType: "Earnings", Importance: int(seq), RawMetadata: map[string]string{"form": "8-K", "filing_date": "2026-01-01"}}
 	b, _ := json.Marshal(s)
-	ev := eventstore.Event{ID: fmt.Sprintf("e-%d", seq), Type: "signal_generated", OccurredAt: ts, AggregateKey: "1:acc", Data: b}
+	ev := eventstore.Event{ID: fmt.Sprintf("e-%d", seq), Type: "signal_generated", OccurredAt: ts, PartitionKey: "1:acc", Data: b}
 	return eventstore.Record{Sequence: seq, AppendedAt: ts.Add(time.Second), Event: ev}
 }
 
