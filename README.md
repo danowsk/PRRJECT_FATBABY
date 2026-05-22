@@ -1,22 +1,149 @@
 # prrject-fatbaby
 
-`prrject-fatbaby` is a small Go event store library with a file-backed implementation.
+`prrject-fatbaby` is a Go-based toolkit for financial signal intelligence and event-driven data processing.
 
-## Features
+It combines:
 
-- Event model with validation (`ID`, `Type`, and `Data` are required).
-- Append-only record storage with monotonically increasing global sequence numbers.
-- Journal files split by UTC date.
-- Latest sequence persisted in a state file for fast recovery.
-- Read records from a given sequence with a configurable limit.
+- a durable, file-backed append-only event store,
+- conservative discovery workers for SEC filings and PR Newswire press releases,
+- a processing pipeline that turns source documents into structured financial signals, and
+- a lightweight dashboard + SSE server for real-time streaming.
 
-## Installation
+## Core capabilities
+
+- **Event store** (`eventstore/`):
+  - Append-only persistence with monotonically increasing global sequence numbers.
+  - UTC-date-partitioned journal files.
+  - Sequence state file for fast recovery after restart.
+  - Read-from-sequence APIs for downstream consumers.
+- **SEC discovery** (`secwatch/`, `cmd/secwatch`):
+  - Polls SEC EDGAR submissions for issuers/forms defined in `config/watchlist.json`.
+  - Emits `filing_discovered` events into the event store.
+  - Supports dry-run, bounded concurrency, rate limiting, retries, and optional polling loops.
+- **Press release discovery** (`prwatch/`, `cmd/prwatch`):
+  - Polls PR Newswire, discovers release URLs, and emits discovery events.
+  - Supports dry-run and continuous polling.
+- **Signal intelligence worker** (`internal/processor`, `pkg/intelligence`, `cmd/processor`):
+  - Watches filing discovery events.
+  - Fetches source filing documents (HTML/XBRL-linked pages), cleans text, and runs provider analysis.
+  - Emits structured signal outputs for downstream trading/monitoring workflows.
+- **Realtime streaming + dashboard** (`internal/server`, `cmd/dashboard`):
+  - Exposes an HTTP dashboard and SSE stream for newly appended events/signals.
+
+## Repository components
+
+| Component | Description |
+| --- | --- |
+| `eventstore` | Core storage engine, including persistence/recovery and sequence-based reads. |
+| `secwatch` | SEC submission discovery and normalization logic. |
+| `prwatch` | PR discovery and source crawling support. |
+| `internal/processor` | Event-to-signal processing worker pipeline. |
+| `pkg/intelligence` | Signal schema + provider interface for analysis backends. |
+| `secfixtures` | Fixture management helpers for SEC corpus snapshots and regression support. |
+| `internal/server` | Dashboard + SSE serving layer. |
+| `fixtures` | Local issuer fixture corpus (metadata + filing artifacts). |
+
+## Signal schema
+
+Processor-generated signals follow this structure (`pkg/intelligence`):
+
+- `signal_type`: e.g. `M&A`, `Earnings`, `Legal`, `Leadership`, `Other`
+- `importance`: integer score from `1` to `10`
+- `sentiment`: decimal score from `-1.0` to `1.0`
+- `summary`: concise one-sentence event summary
+- `impact_analysis`: short paragraph describing likely financial impact
+- `raw_metadata`: provider/debug metadata map
+
+## Getting started
+
+### Requirements
+
+- Go `1.22+`
+
+### Install dependencies
 
 ```bash
-go get github.com/example/prrject-fatbaby
+go mod download
 ```
 
-## Quick start
+### Configure watchlist
+
+Maintain issuers/forms in:
+
+- `config/watchlist.json`
+
+Each entry is intended to track a ticker, CIK, and allowed form set (for example `8-K`, `10-Q`, `10-K`).
+
+## Running the system
+
+### 1) SEC discovery
+
+Run a one-shot dry-run poll (no persistence):
+
+```bash
+go run ./cmd/secwatch \
+  -watchlist ./config/watchlist.json \
+  -store ./var/secwatch \
+  -dry-run
+```
+
+Run with persistence enabled:
+
+```bash
+go run ./cmd/secwatch \
+  -watchlist ./config/watchlist.json \
+  -store ./var/secwatch
+```
+
+Run continuously every 5 minutes:
+
+```bash
+go run ./cmd/secwatch \
+  -watchlist ./config/watchlist.json \
+  -store ./var/secwatch \
+  -poll-interval 5m
+```
+
+### 2) PR discovery
+
+Run PR Newswire discovery loop:
+
+```bash
+go run ./cmd/prwatch \
+  -store ./var/prwatch
+```
+
+Optional dry-run mode:
+
+```bash
+go run ./cmd/prwatch \
+  -store ./var/prwatch \
+  -dry-run
+```
+
+### 3) Signal processor
+
+Start processing discovered filings into structured signals:
+
+```bash
+go run ./cmd/processor \
+  -store ./var/secwatch \
+  -workers 4
+```
+
+### 4) Dashboard + SSE server
+
+Start dashboard server:
+
+```bash
+go run ./cmd/dashboard \
+  -data-dir ./var/secwatch \
+  -port 8080
+```
+
+Then open `http://localhost:8080`.
+
+## Event store quick start
 
 ```go
 package main
@@ -53,95 +180,12 @@ func main() {
 }
 ```
 
-## Running tests
+## Testing
 
 ```bash
 go test ./...
 ```
 
-## SEC watchlist discovery (phase 1)
-
-This repo now includes a conservative SEC submissions discovery tool:
-
-- Watchlist config: `config/watchlist.json`
-- Command: `cmd/secwatch/main.go`
-- Discovery package: `secwatch/`
-
-Run a safe dry-run poll:
-
-```bash
-go run ./cmd/secwatch \
-  -watchlist ./config/watchlist.json \
-  -store ./var/secwatch \
-  -dry-run
-```
-
-Run real mode (persists `filing_discovered` events in the file-backed event store):
-
-```bash
-go run ./cmd/secwatch \
-  -watchlist ./config/watchlist.json \
-  -store ./var/secwatch
-```
-
-Run continuously with a conservative polling cadence:
-
-```bash
-go run ./cmd/secwatch \
-  -watchlist ./config/watchlist.json \
-  -store ./var/secwatch \
-  -poll-interval 5m
-```
-
-## Track A — modest historical backfill
-
-Not “download the SEC.”
-Not “mirror EDGAR.”
-
-A controlled rolling backfill for your watched issuers/forms.
-
-This gives you:
-
-- temporal depth,
-- repeated quarterly structure,
-- amendments,
-- issuer-specific drift,
-- parser regression coverage,
-- and eventually training/eval material.
-
-### Backfill philosophy
-
-Use **shallow breadth first, then selective depth**:
-
-1. Pull a few years for each watched issuer.
-2. Cover a focused form set (`10-K`, `10-Q`, `8-K`, plus `10-K/A` / `10-Q/A` when present).
-3. Keep strict per-issuer and per-run caps so ingestion stays deterministic and cheap.
-4. Persist a local manifest with enough metadata to replay fixture generation.
-
-### Practical starting point
-
-- Time window: last **2–3 years** per issuer.
-- Forms: start with `10-K`, `10-Q`, `8-K` (+ amendments).
-- Per run cap: ~25 filings max total (e.g., 5–10 per issuer).
-- Corpus policy: only keep primary filing HTML plus JSON metadata/index.
-
-### Recommended rollout phases
-
-1. **Phase A1 (breadth):** Populate all watched issuers with at least one annual + one quarterly filing.
-2. **Phase A2 (quarterly depth):** Fill missing quarter chains for each issuer.
-3. **Phase A3 (amendments):** Explicitly add amendment forms and verify supersession handling.
-4. **Phase A4 (drift):** Extend selected issuers further back for parser regression and historical edge cases.
-
-### Why this works for this repo
-
-The repository already keeps fixture snapshots by issuer under `fixtures/` alongside `manifest.json` files. A rolling backfill strategy keeps fixture volume manageable while still increasing parser and discovery coverage over time.
-
-## Project layout
-
-- `eventstore/types.go`: core event/record types and `EventStore` interface.
-- `eventstore/file_store.go`: file-backed implementation.
-- `cmd/eventstore-demo/main.go`: simple demo program.
-
 ## License
 
-This project is licensed under the terms of the MIT License. See [LICENSE](LICENSE).
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
