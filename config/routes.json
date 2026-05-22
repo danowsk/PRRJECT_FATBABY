@@ -1,3 +1,18 @@
+ok so this is going to be broken - we have 2 different systems using the broker package - should be fine?
 [
   {"id":"default","key":"test-key"}
 ]
+{
+  "routes": [
+    {
+      "tenant_id": "acme-corp",
+      "tenant_key": "tk_acme_REPLACE",
+      "upstream_base": "https://api.example-partner.com",
+      "upstream_key": "sk_partner_REPLACE",
+      "allowed_paths": ["/v1/"],
+      "strip_headers": ["X-Internal-Debug"],
+      "inject_headers": {"X-Broker-Version": "1"},
+      "enabled": true
+    }
+  ]
+}
