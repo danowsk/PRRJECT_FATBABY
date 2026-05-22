@@ -180,6 +180,10 @@ func main() {
 }
 ```
 
+## Architecture notes
+
+- [Distributed event intelligence architecture](docs/architecture-distributed-event-intelligence.md)
+
 ## Testing
 
 ```bash
