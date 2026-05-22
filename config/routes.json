@@ -1,3 +1,7 @@
+ok so this is going to be broken - we have 2 different systems using the broker package - should be fine?
+[
+  {"id":"default","key":"test-key"}
+]
 {
   "routes": [
     {
