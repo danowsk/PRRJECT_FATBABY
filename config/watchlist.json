@@ -4,7 +4,11 @@
       "ticker": "AAPL",
       "company_name": "Apple Inc.",
       "cik": "320193",
-      "allowed_forms": ["10-K", "10-Q", "8-K"],
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
       "enabled": true,
       "poll_priority": 1,
       "notes": "core megacap coverage"
@@ -13,7 +17,11 @@
       "ticker": "MSFT",
       "company_name": "Microsoft Corporation",
       "cik": "789019",
-      "allowed_forms": ["10-K", "10-Q", "8-K"],
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
       "enabled": true,
       "poll_priority": 1,
       "notes": "core megacap coverage"
@@ -22,10 +30,196 @@
       "ticker": "NVDA",
       "company_name": "NVIDIA Corporation",
       "cik": "1045810",
-      "allowed_forms": ["10-K", "10-Q", "8-K"],
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
       "enabled": true,
       "poll_priority": 2,
       "notes": "core semiconductor coverage"
+    },
+    {
+      "ticker": "BLK",
+      "company_name": "BlackRock, Inc.",
+      "cik": "1364742",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "STT",
+      "company_name": "State Street Corporation",
+      "cik": "93751",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "GOOG",
+      "company_name": "Alphabet Inc.",
+      "cik": "1652044",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "GOOGL",
+      "company_name": "Alphabet Inc.",
+      "cik": "1652044",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "BRK.A",
+      "company_name": "Berkshire Hathaway Inc.",
+      "cik": "1067983",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "BRK.B",
+      "company_name": "Berkshire Hathaway Inc.",
+      "cik": "1067983",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "MSTR",
+      "company_name": "MicroStrategy Incorporated",
+      "cik": "1050446",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "PLTR",
+      "company_name": "Palantir Technologies Inc.",
+      "cik": "1321655",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "SCHW",
+      "company_name": "The Charles Schwab Corporation",
+      "cik": "316709",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "BEN",
+      "company_name": "Franklin Resources, Inc.",
+      "cik": "38777",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "BAC",
+      "company_name": "Bank of America Corporation",
+      "cik": "70858",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "JPM",
+      "company_name": "JPMorgan Chase & Co.",
+      "cik": "19617",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "WFC",
+      "company_name": "Wells Fargo & Company",
+      "cik": "72971",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
+    },
+    {
+      "ticker": "LLY",
+      "company_name": "Eli Lilly and Company",
+      "cik": "59478",
+      "allowed_forms": [
+        "10-K",
+        "10-Q",
+        "8-K"
+      ],
+      "enabled": true,
+      "poll_priority": 2,
+      "notes": "user-added watchlist coverage"
     }
   ]
 }
