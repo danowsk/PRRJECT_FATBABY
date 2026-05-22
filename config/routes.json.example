@@ -1,3 +1,6 @@
+# routes.json is shared by cmd/broker (HTTP proxy) and cmd/feedserver (TCP feed).
+# Both resolve tenant_key → upstream credentials via broker.Registry.
+# Replace *_REPLACE values with real credentials before running in production.
 {
   "routes": [
     {
