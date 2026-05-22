@@ -110,6 +110,15 @@ func handleOne(ctx context.Context, cfg WorkerConfig, filing secwatch.FilingDisc
 	if strings.Contains(strings.ToUpper(filing.Form), "8-K") {
 		kind = "sec_8k"
 	}
+	if !sourceDocumentExists(ctx, cfg.Store, identity) {
+		if persistErr := persistSourceDocument(ctx, cfg.Store, filing, identity, kind, clean); persistErr != nil {
+			cfg.Logger.Printf("processor source_document persist failed identity=%s err=%v", identity, persistErr)
+		} else {
+			cfg.Logger.Printf("processor source_document persisted identity=%s ticker=%s chars=%d", identity, filing.Ticker, len(clean))
+		}
+	} else {
+		cfg.Logger.Printf("processor source_document already persisted identity=%s", identity)
+	}
 	signal, err := cfg.Provider.AnalyzeText(ctx, fmt.Sprintf("source_type=%s\nform=%s\n\n%s", kind, filing.Form, clean))
 	if err != nil {
 		cfg.Logger.Printf("processor analyze failed identity=%s err=%v", identity, err)
