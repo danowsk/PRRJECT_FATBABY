@@ -7,6 +7,13 @@ All notable changes to this project are documented in this file.
 - Added a tenant-aware broker proxy with hot-reload registry support.
 - Expanded the README with full financial signal pipeline architecture and usage details.
 - Added a second construct workflow with reduced fixture footprint.
+- Added a signal API server with indexed eventstore read model for querying signals.
+- Added Emily fatbaby operations tool support and moved the Emily agent entrypoint under `cmd`.
+- Added unified discovery identity schema with early ticker extraction support.
+- Added distributed event intelligence architecture documentation.
+- Added requested SEC watchlist tickers.
+- Added a resilient `fatstream` TCP client SDK plus CLI and usage examples.
+- Fixed broker registry merge issues and unified shared routes configuration.
 
 ## 2026-05-16
 - Added `prwatch` crawler entrypoint and `prwatch-body` command implementations.
