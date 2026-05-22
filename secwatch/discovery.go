@@ -135,7 +135,7 @@ func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
 				ID:           "filing_discovered:" + filing.Identity(),
 				Type:         "filing_discovered",
 				OccurredAt:   cfg.Now(),
-				AggregateKey: filing.Identity(),
+				PartitionKey: filing.Identity(),
 				Source:       "secwatch",
 				Data:         mustJSON(discoveryEventData(filing, cfg.Now())),
 			}

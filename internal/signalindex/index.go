@@ -62,7 +62,7 @@ func (idx *Index) Ingest(rec eventstore.Record) error {
 	if ticker == "" {
 		return nil
 	}
-	_, accession := splitAggregateKey(rec.Event.AggregateKey)
+	_, accession := splitPartitionKey(rec.Event.PartitionKey)
 	entry := &SignalEntry{
 		Seq:             rec.Sequence,
 		Ticker:          ticker,
@@ -157,7 +157,7 @@ func (idx *Index) Depth() int {
 
 func normalizeTicker(t string) string { return strings.ToUpper(strings.TrimSpace(t)) }
 
-func splitAggregateKey(key string) (string, string) {
+func splitPartitionKey(key string) (string, string) {
 	parts := strings.SplitN(strings.TrimSpace(key), ":", 2)
 	if len(parts) != 2 {
 		return "", ""

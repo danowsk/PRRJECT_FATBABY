@@ -207,7 +207,7 @@ func registerFatbabyTools(d *ToolDispatcher, fatbabyRoot string) {
 			if len(preview) > 200 {
 				preview = preview[:200]
 			}
-			line, _ := json.Marshal(map[string]any{"seq": r.Sequence, "type": r.Event.Type, "aggregate_key": r.Event.AggregateKey, "occurred_at": r.Event.OccurredAt, "data_preview": preview})
+			line, _ := json.Marshal(map[string]any{"seq": r.Sequence, "type": r.Event.Type, "partition_key": r.Event.PartitionKey, "occurred_at": r.Event.OccurredAt, "data_preview": preview})
 			lines = append(lines, string(line))
 		}
 		return strings.Join(lines, "\n"), nil

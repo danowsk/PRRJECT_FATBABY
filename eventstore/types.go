@@ -14,13 +14,24 @@ var (
 	ErrInvalidData      = errors.New("event data is required")
 )
 
+// DiscoveryIdentity acts as an explicit composite payload signature field.
+type DiscoveryIdentity struct {
+	CIK             string `json:"cik,omitempty"`
+	AccessionNumber string `json:"accession_number,omitempty"`
+	URL             string `json:"url,omitempty"`
+}
+
+// Event is the canonical cross-service envelope for replay, enrichment, analytics, and training.
 type Event struct {
-	ID           string          `json:"id"`
-	Type         string          `json:"type"`
-	OccurredAt   time.Time       `json:"occurred_at"`
-	AggregateKey string          `json:"aggregate_key,omitempty"`
-	Source       string          `json:"source,omitempty"`
-	Data         json.RawMessage `json:"data"`
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Source       string            `json:"source"`
+	OccurredAt   time.Time         `json:"occurred_at"`
+	IngestedAt   time.Time         `json:"ingested_at"`
+	PartitionKey string            `json:"partition_key,omitempty"`
+	Identity     DiscoveryIdentity `json:"identity,omitempty"`
+	Data         json.RawMessage   `json:"data"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 type Record struct {
@@ -48,6 +59,12 @@ func normalizeAndValidateEvent(event Event) (Event, error) {
 	}
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
+	}
+	if event.IngestedAt.IsZero() {
+		event.IngestedAt = time.Now().UTC()
+	}
+	if event.Source == "" {
+		event.Source = "unknown"
 	}
 	return event, nil
 }
