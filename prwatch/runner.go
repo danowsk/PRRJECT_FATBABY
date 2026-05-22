@@ -2,11 +2,17 @@ package prwatch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/example/prrject-fatbaby/eventstore"
+	identitypkg "github.com/example/prrject-fatbaby/internal/identity"
+	prid "github.com/example/prrject-fatbaby/internal/prwatch"
 )
 
 type Logger interface {
@@ -26,12 +32,18 @@ type Summary struct {
 	Discovered  int
 }
 
-type DiscoveredEvent struct {
-	Headline     string `json:"headline"`
-	Company      string `json:"company,omitempty"`
-	URL          string `json:"url"`
-	PublishedAt  string `json:"published_at,omitempty"`
-	DiscoveredAt string `json:"discovered_at"`
+type PressReleaseDiscovered struct {
+	URL              string                        `json:"url"`
+	Source           string                        `json:"source"`
+	DiscoveredAt     time.Time                     `json:"discovered_at"`
+	Identity         identitypkg.DiscoveryIdentity `json:"identity"`
+	ExtractionMethod string                        `json:"extraction_method"`
+	RawBodySnippet   string                        `json:"raw_body_snippet,omitempty"`
+	ContentHash      string                        `json:"content_hash"`
+	Metadata         map[string]string             `json:"metadata,omitempty"`
+	Headline         string                        `json:"headline,omitempty"`
+	Company          string                        `json:"company,omitempty"`
+	PublishedAt      string                        `json:"published_at,omitempty"`
 }
 
 func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
@@ -71,7 +83,7 @@ func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
 			OccurredAt:   cfg.Now(),
 			AggregateKey: pr.ID,
 			Source:       "prnewswire",
-			Data:         mustJSON(eventData(pr, cfg.Now())),
+			Data:         mustJSON(eventData(ctx, cfg, pr, cfg.Now())),
 		}
 		if _, err := store.Append(ctx, ev); err != nil {
 			return s, fmt.Errorf("append event %s: %w", pr.ID, err)
@@ -84,11 +96,21 @@ func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
 	return s, nil
 }
 
-func eventData(pr PRDiscovery, now time.Time) DiscoveredEvent {
-	e := DiscoveredEvent{Headline: pr.Headline, Company: pr.Company, URL: pr.URL, DiscoveredAt: now.UTC().Format(time.RFC3339Nano)}
+func eventData(ctx context.Context, cfg RunnerConfig, pr PRDiscovery, now time.Time) PressReleaseDiscovered {
+	e := PressReleaseDiscovered{URL: pr.URL, Source: "prnewswire", DiscoveredAt: now.UTC(), ExtractionMethod: "regex", Headline: pr.Headline, Company: pr.Company}
 	if !pr.Timestamp.IsZero() {
 		e.PublishedAt = pr.Timestamp.UTC().Format(time.RFC3339Nano)
 	}
+	if refs, snippet := discoverTickers(ctx, cfg.Client, pr.URL); len(refs) > 0 {
+		e.Identity.AllTickers = refs
+		first := refs[0]
+		e.Identity.PrimaryTicker = &first
+		e.RawBodySnippet = snippet
+	}
+	e.Metadata = map[string]string{"id": pr.ID}
+	b, _ := json.Marshal(e)
+	sum := sha256.Sum256(b)
+	e.ContentHash = hex.EncodeToString(sum[:])
 	return e
 }
 
@@ -111,7 +133,7 @@ func LoadSeenIDs(ctx context.Context, store eventstore.EventStore) (map[string]s
 				seen[rec.Event.AggregateKey] = struct{}{}
 				continue
 			}
-			var e DiscoveredEvent
+			var e PressReleaseDiscovered
 			if err := json.Unmarshal(rec.Event.Data, &e); err == nil && e.URL != "" {
 				seen[e.URL] = struct{}{}
 			}
@@ -123,4 +145,24 @@ func LoadSeenIDs(ctx context.Context, store eventstore.EventStore) (map[string]s
 func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func discoverTickers(ctx context.Context, c *Client, u string) ([]identitypkg.SecurityRef, string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, ""
+	}
+	req.Header.Set("User-Agent", c.ua)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+	refs := prid.ExtractFromHTML(body)
+	snippet := string(body)
+	if len(snippet) > 256 {
+		snippet = snippet[:256]
+	}
+	return refs, snippet
 }

@@ -133,7 +133,7 @@ func crawlBatch(
 	seenMu *sync.Mutex,
 ) {
 	type job struct {
-		discovery DiscoveredEvent
+		discovery PressReleaseDiscovered
 		prID      string
 	}
 
@@ -162,7 +162,7 @@ func crawlBatch(
 		if r.Event.Type != "pr_discovered" {
 			continue
 		}
-		var ev DiscoveredEvent
+		var ev PressReleaseDiscovered
 		if err := json.Unmarshal(r.Event.Data, &ev); err != nil {
 			cfg.Logger.Printf("body_crawler skip sequence=%d reason=unmarshal_failed err=%v", r.Sequence, err)
 			continue
@@ -189,7 +189,7 @@ func crawlBatch(
 }
 
 // crawlOne fetches, cleans, and persists a single press release body.
-func crawlOne(ctx context.Context, cfg CrawlerConfig, prID string, ev DiscoveredEvent) error {
+func crawlOne(ctx context.Context, cfg CrawlerConfig, prID string, ev PressReleaseDiscovered) error {
 	now := cfg.Now()
 	nowStr := now.Format(time.RFC3339Nano)
 
