@@ -12,3 +12,9 @@ type Route struct {
 	MaxBodyBytes  int64             `json:"max_body_bytes"`
 	Enabled       bool              `json:"enabled"`
 }
+
+// RouteTenant is a minimal tenant identity used by feedserver session auth.
+type RouteTenant struct {
+	ID  string
+	Key string
+}

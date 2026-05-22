@@ -89,7 +89,8 @@ func (s *Session) handshake() error {
 	if err := json.Unmarshal(p, &h); err != nil {
 		return s.sendError("bad_hello", err.Error())
 	}
-	tenant, err := s.cfg.Registry.ResolveKey(h.Key)
+	var tenant broker.RouteTenant
+	tenant, err = s.cfg.Registry.ResolveKey(h.Key)
 	if err != nil {
 		return s.sendError("unauthorized", "invalid key")
 	}
