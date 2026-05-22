@@ -1,32 +1,53 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/prrject-fatbaby/eventstore"
+	"github.com/example/prrject-fatbaby/pkg/intelligence"
 )
 
+// Config holds emily-agent runtime configuration.
 type Config struct {
 	Port            string
 	ConversationDir string
 	Model           string
 	ValidatorModel  string
-	APIKey          string
+	APIKey          string // Anthropic API key.
 	GitCommit       bool
 	RateLimitRPM    int
 	MaxToolIters    int
 	FatbabyRoot     string
 }
+
+type rateLimiter struct{ ch <-chan time.Time }
+
+func newRateLimiter(rpm int) *rateLimiter {
+	if rpm <= 0 {
+		rpm = 20
+	}
+	interval := time.Minute / time.Duration(rpm)
+	if interval <= 0 {
+		interval = time.Second
+	}
+	t := time.NewTicker(interval)
+	return &rateLimiter{ch: t.C}
+}
+func (r *rateLimiter) Wait() { <-r.ch }
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -41,24 +62,14 @@ func loadConfig() Config {
 		gitCommit = false
 	}
 	rpm, _ := strconv.Atoi(envOr("RATE_LIMIT_RPM", "20"))
-	if rpm <= 0 {
-		rpm = 20
-	}
 	maxIters, _ := strconv.Atoi(envOr("MAX_TOOL_ITERS", "10"))
 	if maxIters <= 0 {
 		maxIters = 10
 	}
-	return Config{
-		Port:            envOr("PORT", "8080"),
-		ConversationDir: envOr("CONVERSATION_DIR", "./conversations"),
-		Model:           envOr("MODEL", "gpt-4o-mini"),
-		ValidatorModel:  envOr("VALIDATOR_MODEL", "gpt-4o-mini"),
-		APIKey:          os.Getenv("OPENAI_API_KEY"),
-		GitCommit:       gitCommit,
-		RateLimitRPM:    rpm,
-		MaxToolIters:    maxIters,
-		FatbabyRoot:     envOr("FATBABY_ROOT", "."),
+	if rpm <= 0 {
+		rpm = 20
 	}
+	return Config{Port: envOr("PORT", "8080"), ConversationDir: envOr("CONVERSATION_DIR", "./conversations"), Model: envOr("MODEL", "gpt-4o-mini"), ValidatorModel: envOr("VALIDATOR_MODEL", "gpt-4o-mini"), APIKey: os.Getenv("ANTHROPIC_API_KEY"), GitCommit: gitCommit, RateLimitRPM: rpm, MaxToolIters: maxIters, FatbabyRoot: envOr("FATBABY_ROOT", ".")}
 }
 
 type ToolDef struct {
@@ -91,12 +102,20 @@ func (d *ToolDispatcher) Register(def ToolDef, fn ToolFunc) {
 	d.handlers[def.Name] = fn
 }
 func (d *ToolDispatcher) Defs() []ToolDef { return d.defs }
+func (d *ToolDispatcher) AnthropicDefs() []map[string]any {
+	out := make([]map[string]any, 0, len(d.defs))
+	for _, td := range d.defs {
+		props := map[string]any{}
+		for k, v := range td.Parameters.Properties {
+			props[k] = map[string]any{"type": v.Type, "description": v.Description}
+		}
+		out = append(out, map[string]any{"name": td.Name, "description": td.Description, "input_schema": map[string]any{"type": td.Parameters.Type, "properties": props, "required": td.Parameters.Required}})
+	}
+	return out
+}
 
 func registerGitTools(d *ToolDispatcher, repoDir string) {}
-
-func absStorePath(root, store string) string {
-	return filepath.Join(root, "var", store)
-}
+func absStorePath(root, store string) string             { return filepath.Join(root, "var", store) }
 
 func openStoreOrMessage(root, storeName string) (*eventstore.FileStore, string, error) {
 	dir := absStorePath(root, storeName)
@@ -123,36 +142,148 @@ func runCommandWithTimeout(args []string, workDir string) (string, error) {
 	return text, err
 }
 
-func registerFatbabyTools(d *ToolDispatcher, fatbabyRoot string) {
-	storeProp := map[string]ToolPropSchema{"store_name": {Type: "string", Description: `"secwatch"|"prwatch"|"prwatch-body"`}}
+func parseProcOutput(s string) string {
+	f := strings.Fields(strings.TrimSpace(s))
+	if len(f) == 0 {
+		return ""
+	}
+	return f[0]
+}
 
-	d.Register(ToolDef{Name: "fatbaby_store_status", Description: "Latest sequence and recent records from a store.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{"store_name": storeProp["store_name"], "limit": {Type: "number", Description: "default 5"}}, Required: []string{"store_name"}}}, func(args map[string]any) (string, error) {
-		storeName, _ := args["store_name"].(string)
-		if storeName == "" {
-			return "", errors.New("store_name is required")
+func registerFatbabyTools(d *ToolDispatcher, fatbabyRoot string) {
+	valid := map[string][]string{"secwatch": {"-watchlist", "./config/watchlist.json", "-store", "./var/secwatch", "-poll-interval", "5m"}, "processor": {"-store", "./var/secwatch", "-workers", "4", "-poll-interval", "15s"}, "newssite": {"-store", "./var/secwatch", "-addr", ":8082"}, "dashboard": {"-data-dir", "./var/secwatch", "-port", "8080"}, "prwatch": {"-store", "./var/prwatch", "-poll-interval", "30s"}, "prwatch-body": {"-discovery-store", "./var/prwatch", "-body-store", "./var/prwatch-body", "-workers", "4", "-poll-interval", "15s"}}
+
+	d.Register(ToolDef{Name: "fatbaby_start_process", Description: "Start a fatbaby pipeline process in the background.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{"process_name": {Type: "string", Description: "secwatch|processor|newssite|dashboard|prwatch|prwatch-body"}, "extra_args": {Type: "string", Description: "optional extra CLI args"}}, Required: []string{"process_name"}}}, func(args map[string]any) (string, error) {
+		pn, _ := args["process_name"].(string)
+		ea, _ := args["extra_args"].(string)
+		def, ok := valid[pn]
+		if !ok {
+			return "", errors.New("invalid process_name")
 		}
-		limit := 5
-		if v, ok := args["limit"].(float64); ok && int(v) > 0 {
-			limit = int(v)
+		res, _ := runCommandWithTimeout([]string{"pgrep", "-af", "cmd/" + pn}, fatbabyRoot)
+		if pid := parseProcOutput(res); pid != "" {
+			return "already running pid=" + pid, nil
 		}
-		store, msg, err := openStoreOrMessage(fatbabyRoot, storeName)
+		if err := os.MkdirAll(filepath.Join(fatbabyRoot, "var", "logs"), 0o755); err != nil {
+			return "", err
+		}
+		logPath := filepath.Join(fatbabyRoot, "var", "logs", pn+".log")
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return "", err
+		}
+		argv := append([]string{"run", "./cmd/" + pn}, def...)
+		if strings.TrimSpace(ea) != "" {
+			argv = append(argv, strings.Fields(ea)...)
+		}
+		cmd := exec.Command("go", argv...)
+		cmd.Dir = fatbabyRoot
+		cmd.Stdout = f
+		cmd.Stderr = f
+		if err := cmd.Start(); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("started pid=%d log=var/logs/%s.log", cmd.Process.Pid, pn), nil
+	})
+
+	d.Register(ToolDef{Name: "fatbaby_stop_process", Description: "Stop a running fatbaby pipeline process by sending SIGTERM.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{"process_name": {Type: "string", Description: "process name"}}, Required: []string{"process_name"}}}, func(args map[string]any) (string, error) {
+		pn, _ := args["process_name"].(string)
+		out, _ := runCommandWithTimeout([]string{"pgrep", "-af", "cmd/" + pn}, fatbabyRoot)
+		pid := parseProcOutput(out)
+		if pid == "" {
+			return "not running", nil
+		}
+		_, err := runCommandWithTimeout([]string{"kill", "-TERM", pid}, fatbabyRoot)
+		if err != nil {
+			return "", err
+		}
+		return "sent SIGTERM to pid=" + pid, nil
+	})
+
+	d.Register(ToolDef{Name: "fatbaby_read_log", Description: "Read the last N lines of a process log file.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{"process_name": {Type: "string", Description: "process name"}, "lines": {Type: "number", Description: "default 50"}}, Required: []string{"process_name"}}}, func(args map[string]any) (string, error) {
+		pn, _ := args["process_name"].(string)
+		n := 50
+		if v, ok := args["lines"].(float64); ok && int(v) > 0 {
+			n = int(v)
+		}
+		p := filepath.Join(fatbabyRoot, "var", "logs", pn+".log")
+		b, err := os.ReadFile(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return "log not found — has this process been started by Emily?", nil
+			}
+			return "", err
+		}
+		lines := strings.Split(string(b), "\n")
+		if len(lines) > n {
+			lines = lines[len(lines)-n:]
+		}
+		out := strings.Join(lines, "\n")
+		if len(out) > 3000 {
+			out = "[truncated] " + out[len(out)-3000:]
+		}
+		return out, nil
+	})
+
+	d.Register(ToolDef{Name: "fatbaby_run_secwatch_once", Description: "Run one real SEC discovery pass and wait for completion.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "go", "run", "./cmd/secwatch", "-watchlist", "./config/watchlist.json", "-store", "./var/secwatch")
+		cmd.Dir = fatbabyRoot
+		out, err := cmd.CombinedOutput()
+		s := strings.TrimSpace(string(out))
+		if len(s) > 8000 {
+			s = s[:8000]
+		}
+		return s, err
+	})
+
+	d.Register(ToolDef{Name: "fatbaby_count_source_documents", Description: "Count source_document_persisted events in secwatch.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
+		store, msg, err := openStoreOrMessage(fatbabyRoot, "secwatch")
 		if msg != "" || err != nil {
 			return msg, err
 		}
 		defer store.Close()
 		latest, _ := store.LatestSequence(context.Background())
-		start := int64(latest) - int64(limit) + 1
-		if start < 1 {
-			start = 1
+		recs, _ := store.ReadFrom(context.Background(), 1, int(latest))
+		by := map[string]int{}
+		total := 0
+		for _, r := range recs {
+			if r.Event.Type != "source_document_persisted" {
+				continue
+			}
+			total++
+			var doc intelligence.SourceDocument
+			if json.Unmarshal(r.Event.Data, &doc) == nil {
+				by[doc.Ticker]++
+			}
 		}
-		recs, _ := store.ReadFrom(context.Background(), uint64(start), limit)
-		resp := map[string]any{"latest_seq": latest, "record_count_shown": len(recs), "records": recs}
+		b, _ := json.MarshalIndent(map[string]any{"total_source_documents": total, "by_ticker": by, "newssite_url": "http://localhost:8082"}, "", "  ")
+		return string(b), nil
+	})
+
+	d.Register(ToolDef{Name: "fatbaby_newssite_status", Description: "Check whether the news site is reachable and return its current document count.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
+		out, _ := runCommandWithTimeout([]string{"pgrep", "-af", "cmd/newssite"}, fatbabyRoot)
+		running := parseProcOutput(out) != ""
+		resp := map[string]any{"process_running": running, "url": "http://localhost:8082"}
+		c := &http.Client{Timeout: 5 * time.Second}
+		r, err := c.Get("http://localhost:8082/")
+		if err != nil {
+			resp["http_reachable"] = false
+			resp["error"] = err.Error()
+		} else {
+			defer r.Body.Close()
+			body, _ := io.ReadAll(r.Body)
+			resp["http_reachable"] = r.StatusCode == 200
+			resp["article_count_approx"] = strings.Count(string(body), "Read full document")
+		}
 		b, _ := json.MarshalIndent(resp, "", "  ")
 		return string(b), nil
 	})
 
+	// existing tools
 	d.Register(ToolDef{Name: "fatbaby_process_status", Description: "Check if fatbaby processes are running.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
-		names := []string{"cmd/secwatch", "cmd/prwatch", "cmd/prwatch-body", "cmd/processor", "cmd/dashboard"}
+		names := []string{"cmd/secwatch", "cmd/prwatch", "cmd/prwatch-body", "cmd/processor", "cmd/dashboard", "cmd/newssite"}
 		type ps struct {
 			Name    string `json:"name"`
 			Running bool   `json:"running"`
@@ -175,72 +306,23 @@ func registerFatbabyTools(d *ToolDispatcher, fatbabyRoot string) {
 		b, _ := json.MarshalIndent(map[string]any{"processes": out, "store_dirs": dirs}, "", "  ")
 		return string(b), nil
 	})
-
-	d.Register(ToolDef{Name: "fatbaby_run_secwatch_dryryn", Description: "Run one dry-run SEC discovery poll.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
-		return runCommandWithTimeout([]string{"go", "run", "./cmd/secwatch", "-watchlist", "./config/watchlist.json", "-store", "./var/secwatch", "-dry-run"}, fatbabyRoot)
-	})
-
-	d.Register(ToolDef{Name: "fatbaby_tail_store", Description: "Tail last N events from a store.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{"store_name": storeProp["store_name"], "event_type": {Type: "string", Description: "optional"}, "limit": {Type: "number", Description: "default 10"}}, Required: []string{"store_name"}}}, func(args map[string]any) (string, error) {
-		storeName, _ := args["store_name"].(string)
-		eventType, _ := args["event_type"].(string)
-		limit := 10
-		if v, ok := args["limit"].(float64); ok && int(v) > 0 {
-			limit = int(v)
-		}
-		store, msg, err := openStoreOrMessage(fatbabyRoot, storeName)
-		if msg != "" || err != nil {
-			return msg, err
-		}
-		defer store.Close()
-		latest, _ := store.LatestSequence(context.Background())
-		start := int64(latest) - int64(limit) + 1
-		if start < 1 {
-			start = 1
-		}
-		recs, _ := store.ReadFrom(context.Background(), uint64(start), limit)
-		var lines []string
-		for _, r := range recs {
-			if eventType != "" && r.Event.Type != eventType {
-				continue
-			}
-			preview := string(r.Event.Data)
-			if len(preview) > 200 {
-				preview = preview[:200]
-			}
-			line, _ := json.Marshal(map[string]any{"seq": r.Sequence, "type": r.Event.Type, "partition_key": r.Event.PartitionKey, "occurred_at": r.Event.OccurredAt, "data_preview": preview})
-			lines = append(lines, string(line))
-		}
-		return strings.Join(lines, "\n"), nil
-	})
-
 	d.Register(ToolDef{Name: "fatbaby_check_env", Description: "Check processor env and prerequisites.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
-		type check struct{ Name, Status, Value string }
-		checks := []check{}
-		ant := os.Getenv("ANTHROPIC_API_KEY")
-		op := os.Getenv("OPENAI_API_KEY")
-		if ant != "" || op != "" {
-			checks = append(checks, check{"llm_key", "ok", "present"})
-		} else {
-			checks = append(checks, check{"llm_key", "missing", ""})
-		}
+		checks := []map[string]string{}
 		if _, err := exec.LookPath("go"); err == nil {
-			checks = append(checks, check{"go_path", "ok", "go found"})
+			checks = append(checks, map[string]string{"name": "go_path", "status": "ok", "value": "go found"})
 		} else {
-			checks = append(checks, check{"go_path", "missing", ""})
+			checks = append(checks, map[string]string{"name": "go_path", "status": "missing"})
 		}
 		watch := filepath.Join(fatbabyRoot, "config", "watchlist.json")
 		b, err := os.ReadFile(watch)
 		if err != nil {
-			checks = append(checks, check{"watchlist", "missing", ""})
+			checks = append(checks, map[string]string{"name": "watchlist", "status": "missing"})
 		} else if json.Valid(b) {
-			checks = append(checks, check{"watchlist", "ok", "valid json"})
-		} else {
-			checks = append(checks, check{"watchlist", "invalid", "invalid json"})
+			checks = append(checks, map[string]string{"name": "watchlist", "status": "ok", "value": "valid json"})
 		}
-		resp, _ := json.MarshalIndent(map[string]any{"checks": checks}, "", "  ")
-		return string(resp), nil
+		rb, _ := json.MarshalIndent(map[string]any{"checks": checks}, "", "  ")
+		return string(rb), nil
 	})
-
 	d.Register(ToolDef{Name: "fatbaby_count_signals", Description: "Count signal events in secwatch store.", Parameters: ToolParameters{Type: "object", Properties: map[string]ToolPropSchema{}}}, func(args map[string]any) (string, error) {
 		store, msg, err := openStoreOrMessage(fatbabyRoot, "secwatch")
 		if msg != "" || err != nil {
@@ -249,42 +331,192 @@ func registerFatbabyTools(d *ToolDispatcher, fatbabyRoot string) {
 		defer store.Close()
 		latest, _ := store.LatestSequence(context.Background())
 		recs, _ := store.ReadFrom(context.Background(), 1, int(latest))
-		generated, failed, discovered := 0, 0, 0
-		var latestSignal map[string]any
+		generated, failed, discovered, sourcedocs := 0, 0, 0, 0
 		for _, r := range recs {
 			switch r.Event.Type {
 			case "signal_generated":
 				generated++
-				_ = json.Unmarshal(r.Event.Data, &latestSignal)
 			case "signal_failed":
 				failed++
 			case "filing_discovered":
 				discovered++
+			case "source_document_persisted":
+				sourcedocs++
 			}
 		}
-		resp := map[string]any{"total_records": len(recs), "signal_generated_count": generated, "signal_failed_count": failed, "filing_discovered_count": discovered, "latest_signal": latestSignal}
+		resp := map[string]any{"total_records": len(recs), "filing_discovered_count": discovered, "source_document_persisted_count": sourcedocs, "signal_generated_count": generated, "signal_failed_count": failed}
 		b, _ := json.MarshalIndent(resp, "", "  ")
 		return string(b), nil
 	})
 }
 
-const emilySystemPrompt = `You are Emily, an AI agent with a dual role.
+const emilySystemPrompt = `You are Emily, the operations agent for prrject-fatbaby — a Go-based financial signal intelligence pipeline.
 
-FATBABY OPERATIONS:
-You manage the prrject-fatbaby intelligence pipeline. It has five processes and three event stores.
-Processes: cmd/secwatch (SEC poller), cmd/prwatch (PR Newswire poller),
-           cmd/prwatch-body (PR body fetcher), cmd/processor (LLM signal generator),
-           cmd/dashboard (web UI on :8080).
-Event stores: var/secwatch (SEC filings + signals), var/prwatch (PR discoveries),
-              var/prwatch-body (PR full bodies).
-The dashboard only reads var/secwatch. The processor reads var/secwatch and writes signals back to it.
-Use your fatbaby tools proactively to answer operational questions — do not guess.`
+## Pipeline architecture
 
-func NewServer(cfg Config) {
+Five processes write to or read from three event stores:
+
+  secwatch      → polls SEC EDGAR → writes filing_discovered         → var/secwatch
+  processor     → reads filing_discovered → fetches + cleans docs
+                  → writes source_document_persisted                  → var/secwatch
+                  → writes signal_generated                           → var/secwatch
+  newssite      → reads source_document_persisted on each GET        → serves :8082
+  dashboard     → reads all event types via SSE                      → serves :8080
+  prwatch       → polls PR Newswire → writes pr_discovered           → var/prwatch
+  prwatch-body  → reads pr_discovered → fetches bodies               → var/prwatch-body
+
+## Startup sequence to get the news site showing content
+
+1. fatbaby_check_env          — verify go binary and watchlist present
+2. fatbaby_run_secwatch_once  — seed the store with filing_discovered events (blocks ~60s)
+3. fatbaby_start_process processor — starts fetching + persisting source documents
+4. fatbaby_start_process newssite  — starts the HTML news server on :8082
+5. Poll fatbaby_count_source_documents until count > 0
+6. Report: news site is live at http://localhost:8082
+
+## Operating rules
+
+- Always use your tools to check actual state before making claims about it.
+- Do not guess whether a process is running — call fatbaby_process_status.
+- Do not guess whether documents exist — call fatbaby_count_source_documents.
+- When starting processes, always check logs with fatbaby_read_log after 10–15 seconds to confirm startup.
+- Prefer fatbaby_run_secwatch_once over fatbaby_start_process secwatch for initial seeding — it blocks and confirms completion.
+- The processor uses a stub LLM provider; signal_generated events are stubs. source_document_persisted events contain the real cleaned filing text.
+- The news site reads source_document_persisted, not signal_generated.
+- var/secwatch is the canonical store for the news site pipeline. var/prwatch and var/prwatch-body are separate.
+- EDGAR rate limit is 10 requests/second; secwatch defaults to 2 RPS — do not advise users to raise it beyond 5.`
+
+var chatHTML = `<!doctype html><html><head><meta charset="utf-8"><title>Emily — fatbaby ops</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:20px auto}#history{height:65vh;overflow:auto;border:1px solid #ccc;padding:12px}textarea{width:100%;height:90px}button{margin-top:8px}</style></head><body><h2>Emily — fatbaby ops</h2><div id="history"></div><p id="thinking" style="display:none">thinking…</p><textarea id="input" placeholder="Type message; Ctrl+Enter to send"></textarea><br><button id="send">Send</button><script>const history=[];const div=document.getElementById('history');const thinking=document.getElementById('thinking');function render(){div.innerHTML='';for(const m of history){const d=document.createElement('div');d.innerHTML='<b>'+m.role+':</b> '+(m.content||'');div.appendChild(d);if(m.role==='assistant'&&m.tool_calls){for(const t of m.tool_calls){const det=document.createElement('details');det.innerHTML='<summary>'+t.tool+'</summary><pre>'+(t.result||'')+'</pre>';div.appendChild(det)}}}div.scrollTop=div.scrollHeight}async function send(){const v=document.getElementById('input').value.trim();if(!v)return;history.push({role:'user',content:v});document.getElementById('input').value='';render();thinking.style.display='block';const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:history.map(x=>({role:x.role,content:x.content}))})});const j=await r.json();thinking.style.display='none';history.push({role:'assistant',content:j.reply,tool_calls:j.tool_calls||[]});render()}document.getElementById('send').onclick=send;document.getElementById('input').addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter')send()});</script></body></html>`
+
+type Server struct {
+	cfg     Config
+	d       *ToolDispatcher
+	limiter *rateLimiter
+	client  *http.Client
+	mu      sync.Mutex
+}
+
+func NewServer(cfg Config) *Server {
 	d := NewToolDispatcher()
 	registerGitTools(d, cfg.ConversationDir)
 	registerFatbabyTools(d, cfg.FatbabyRoot)
-	log.Printf("tools registered: %d", len(d.Defs()))
+	return &Server{cfg: cfg, d: d, limiter: newRateLimiter(cfg.RateLimitRPM), client: &http.Client{Timeout: 90 * time.Second}}
 }
 
-func main() { NewServer(loadConfig()); fmt.Println("emily-agent fork initialized") }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			http.Error(w, "internal server error", 500)
+		}
+	}()
+	if r.Method == http.MethodGet && r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, chatHTML)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/chat" {
+		s.handleChat(w, r)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	reply, calls := s.runToolLoop(req.Messages)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"reply": reply, "tool_calls": calls})
+}
+
+func (s *Server) runToolLoop(msgs []map[string]any) (string, []map[string]string) {
+	toolCalls := []map[string]string{}
+	for i := 0; i < s.cfg.MaxToolIters; i++ {
+		s.limiter.Wait()
+		payload := map[string]any{"model": "claude-sonnet-4-20250514", "max_tokens": 4096, "system": emilySystemPrompt, "tools": s.d.AnthropicDefs(), "messages": msgs}
+		b, _ := json.Marshal(payload)
+		req, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(b))
+		req.Header.Set("x-api-key", s.cfg.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("content-type", "application/json")
+		resp, err := s.client.Do(req)
+		if err != nil {
+			log.Printf("anthropic_error err=%v", err)
+			return "Anthropic request failed: " + err.Error(), toolCalls
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode/100 != 2 {
+			log.Printf("anthropic_status status=%d body=%s", resp.StatusCode, string(body))
+			return fmt.Sprintf("Anthropic API error: %s", strings.TrimSpace(string(body))), toolCalls
+		}
+		var ar struct {
+			StopReason string           `json:"stop_reason"`
+			Content    []map[string]any `json:"content"`
+		}
+		if err := json.Unmarshal(body, &ar); err != nil {
+			return "Failed parsing Anthropic response", toolCalls
+		}
+		if ar.StopReason != "tool_use" {
+			parts := []string{}
+			for _, c := range ar.Content {
+				if c["type"] == "text" {
+					if t, ok := c["text"].(string); ok {
+						parts = append(parts, t)
+					}
+				}
+			}
+			return strings.Join(parts, "\n"), toolCalls
+		}
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": ar.Content})
+		resultBlocks := []map[string]any{}
+		for _, c := range ar.Content {
+			if c["type"] != "tool_use" {
+				continue
+			}
+			name, _ := c["name"].(string)
+			id, _ := c["id"].(string)
+			in, _ := c["input"].(map[string]any)
+			fn := s.d.handlers[name]
+			res := ""
+			isErr := false
+			if fn == nil {
+				res = "unknown tool: " + name
+				isErr = true
+			} else {
+				out, err := fn(in)
+				res = out
+				if err != nil {
+					isErr = true
+					if res == "" {
+						res = err.Error()
+					} else {
+						res = res + "\n" + err.Error()
+					}
+				}
+			}
+			toolCalls = append(toolCalls, map[string]string{"tool": name, "result": res})
+			resultBlocks = append(resultBlocks, map[string]any{"type": "tool_result", "tool_use_id": id, "content": res, "is_error": isErr})
+		}
+		msgs = append(msgs, map[string]any{"role": "user", "content": resultBlocks})
+	}
+	return "I reached the tool call limit without completing. Try again or simplify the request.", toolCalls
+}
+
+func main() {
+	cfg := loadConfig()
+	if cfg.APIKey == "" {
+		log.Fatalf("FATAL: ANTHROPIC_API_KEY environment variable is not set.\nExport it before running: export ANTHROPIC_API_KEY=sk-ant-...")
+	}
+	s := NewServer(cfg)
+	mux := http.NewServeMux()
+	mux.Handle("/", s)
+	mux.Handle("/chat", s)
+	log.Printf("emily-agent listening addr=:%s model=%s tools=%d fatbaby_root=%s", cfg.Port, "claude-sonnet-4-20250514", len(s.d.Defs()), cfg.FatbabyRoot)
+	log.Fatal(http.ListenAndServe(":"+cfg.Port, mux))
+}
