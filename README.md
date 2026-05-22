@@ -183,6 +183,7 @@ func main() {
 ## Architecture notes
 
 - [Distributed event intelligence architecture](docs/architecture-distributed-event-intelligence.md)
+- [News site end-to-end runbook](docs/news-site-e2e-runbook.md)
 
 ## Testing
 
