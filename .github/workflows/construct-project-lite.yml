@@ -1,0 +1,61 @@
+name: Construct Project (Lite Fixtures)
+
+on:
+  push:
+    branches:
+      - work
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  construct-project-lite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate full-project construct with fixture reduction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out_file="PRRJECT_FATBABY_PROJECT_CONSTRUCT_LITE.txt"
+          run_number="${GITHUB_RUN_NUMBER:-local}"
+          {
+            echo "Repository: PRRJECT_FATBABY | Run: ${run_number}"
+            echo
+          } > "${out_file}"
+
+          # Include all regular files in the repository, excluding known heavy/generated paths.
+          # Significantly reduce fixture impact by omitting common fixture directories and fixture-style files.
+          while IFS= read -r relpath; do
+            {
+              echo "--- FILE START: ${relpath} ---"
+              cat "${relpath}"
+              echo
+              echo "--- FILE END: ${relpath} ---"
+              echo
+            } >> "${out_file}"
+          done < <(
+            find . \
+              \( -path './.git' -o -path './node_modules' -o -path './vendor' -o -path './dist' -o -path './build' -o -path './out' -o -path './coverage' -o -path './artifacts' -o -path './.next' -o -path './target' -o -path './bin' -o -path './obj' -o -path './tmp' -o -path './temp' -o -path './caches' \) -prune -o \
+              -type f \
+              ! -path './PRRJECT_FATBABY_PROJECT_CONSTRUCT_LITE.txt' \
+              ! -path './PRRJECT_FATBABY_CONSTRUCT.txt' \
+              ! -path '*/fixtures/*' \
+              ! -path '*/fixture/*' \
+              ! -path '*/test-fixtures/*' \
+              ! -path '*/test_fixtures/*' \
+              ! -name '*.fixture.*' \
+              ! -name '*.snap' \
+              -print | sed 's#^./##' | LC_ALL=C sort
+          )
+
+      - name: Upload project construct artifact (lite fixtures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRRJECT_FATBABY-project-construct-lite-${{ github.run_number }}-${{ github.sha }}
+          path: PRRJECT_FATBABY_PROJECT_CONSTRUCT_LITE.txt
+          if-no-files-found: error
