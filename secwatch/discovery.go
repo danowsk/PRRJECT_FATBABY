@@ -2,15 +2,20 @@ package secwatch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/example/prrject-fatbaby/eventstore"
+	"github.com/example/prrject-fatbaby/internal/identity"
+	"github.com/example/prrject-fatbaby/internal/issuerregistry"
 )
 
 type RunnerConfig struct {
+	IssuerRegistry  *issuerregistry.IssuerRegistry
 	WatchlistPath   string
 	StoreRoot       string
 	DryRun          bool
@@ -137,7 +142,7 @@ func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
 				OccurredAt:   cfg.Now(),
 				AggregateKey: filing.Identity(),
 				Source:       "secwatch",
-				Data:         mustJSON(discoveryEventData(filing, cfg.Now())),
+				Data:         mustJSON(discoveryEventData(filing, cfg.Now(), cfg.IssuerRegistry)),
 			}
 			if _, err := store.Append(ctx, ev); err != nil {
 				return summary, fmt.Errorf("persist discovered filing %s: %w", filing.Identity(), err)
@@ -148,6 +153,19 @@ func RunDiscovery(ctx context.Context, cfg RunnerConfig) (Summary, error) {
 	}
 	cfg.Logger.Printf("secwatch summary watched=%d ok=%d failed=%d discovered=%d already_seen=%d dry_run=%t", summary.Watched, summary.CompaniesOK, summary.CompaniesFail, summary.Discovered, summary.SeenSkipped, cfg.DryRun)
 	return summary, nil
+}
+
+type FilingDiscovered struct {
+	CIK             string                     `json:"cik"`
+	AccessionNumber string                     `json:"accession_number"`
+	FormType        string                     `json:"form_type"`
+	DiscoveredAt    time.Time                  `json:"discovered_at"`
+	Identity        identity.DiscoveryIdentity `json:"identity"`
+	ContentHash     string                     `json:"content_hash"`
+	Metadata        map[string]string          `json:"metadata,omitempty"`
+	FilingDate      string                     `json:"filing_date,omitempty"`
+	PrimaryDocument string                     `json:"primary_document,omitempty"`
+	SubmissionsURL  string                     `json:"submissions_source_url,omitempty"`
 }
 
 type FilingDiscoveredEvent struct {
@@ -162,18 +180,29 @@ type FilingDiscoveredEvent struct {
 	DiscoveredAt       string `json:"discovered_at"`
 }
 
-func discoveryEventData(f Filing, now time.Time) FilingDiscoveredEvent {
-	return FilingDiscoveredEvent{
-		Ticker:             f.Ticker,
-		CIK:                f.CIK,
-		AccessionNumber:    f.AccessionNumber,
-		Form:               f.Form,
-		FilingDate:         f.FilingDate,
-		AcceptanceDateTime: f.AcceptanceDateTime,
-		PrimaryDocument:    f.PrimaryDocument,
-		SubmissionsURL:     f.SubmissionsURL,
-		DiscoveredAt:       now.UTC().Format(time.RFC3339Nano),
+func discoveryEventData(f Filing, now time.Time, reg *issuerregistry.IssuerRegistry) FilingDiscovered {
+	refs := reg.ResolveByCIK(f.CIK)
+	if len(refs) == 0 && f.Ticker != "" {
+		refs = []identity.SecurityRef{{Exchange: "", Symbol: f.Ticker, CIK: f.CIK, Source: "historical_mapping", Confidence: 0.6}}
 	}
+	id := identity.DiscoveryIdentity{AllTickers: refs}
+	if len(refs) > 0 {
+		first := refs[0]
+		id.PrimaryTicker = &first
+	}
+	payload := FilingDiscovered{
+		CIK:             f.CIK,
+		AccessionNumber: f.AccessionNumber,
+		FormType:        f.Form,
+		DiscoveredAt:    now.UTC(),
+		Identity:        id,
+		Metadata:        map[string]string{"acceptance_datetime": f.AcceptanceDateTime},
+		FilingDate:      f.FilingDate,
+		PrimaryDocument: f.PrimaryDocument,
+		SubmissionsURL:  f.SubmissionsURL,
+	}
+	payload.ContentHash = hashFiling(payload)
+	return payload
 }
 
 func LoadSeenIdentities(ctx context.Context, store eventstore.EventStore) (map[string]struct{}, error) {
@@ -191,12 +220,14 @@ func LoadSeenIdentities(ctx context.Context, store eventstore.EventStore) (map[s
 			if rec.Event.Type != "filing_discovered" {
 				continue
 			}
-			var e FilingDiscoveredEvent
-			if err := json.Unmarshal(rec.Event.Data, &e); err != nil {
+			var e FilingDiscovered
+			if err := json.Unmarshal(rec.Event.Data, &e); err == nil && e.CIK != "" && e.AccessionNumber != "" {
+				seen[FilingIdentity(e.CIK, e.AccessionNumber)] = struct{}{}
 				continue
 			}
-			if e.CIK != "" && e.AccessionNumber != "" {
-				seen[FilingIdentity(e.CIK, e.AccessionNumber)] = struct{}{}
+			var legacy FilingDiscoveredEvent
+			if err := json.Unmarshal(rec.Event.Data, &legacy); err == nil && legacy.CIK != "" && legacy.AccessionNumber != "" {
+				seen[FilingIdentity(legacy.CIK, legacy.AccessionNumber)] = struct{}{}
 			}
 		}
 		from = recs[len(recs)-1].Sequence + 1
@@ -206,4 +237,10 @@ func LoadSeenIdentities(ctx context.Context, store eventstore.EventStore) (map[s
 func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func hashFiling(f FilingDiscovered) string {
+	b, _ := json.Marshal(f)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
