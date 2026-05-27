@@ -28,6 +28,9 @@ type Event struct {
 	Source       string            `json:"source"`
 	OccurredAt   time.Time         `json:"occurred_at"`
 	IngestedAt   time.Time         `json:"ingested_at"`
+	Version      int               `json:"version,omitempty"`
+	Ticker       string            `json:"ticker,omitempty"`
+	SourceID     string            `json:"source_id,omitempty"`
 	PartitionKey string            `json:"partition_key,omitempty"`
 	Identity     DiscoveryIdentity `json:"identity,omitempty"`
 	Data         json.RawMessage   `json:"data"`
@@ -65,6 +68,9 @@ func normalizeAndValidateEvent(event Event) (Event, error) {
 	}
 	if event.Source == "" {
 		event.Source = "unknown"
+	}
+	if event.Version == 0 {
+		event.Version = 1
 	}
 	return event, nil
 }
